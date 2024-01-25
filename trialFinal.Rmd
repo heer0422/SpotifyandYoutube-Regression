@@ -1,0 +1,168 @@
+---
+title: "Final Project"
+author: "Nirvani Pathak"
+subtitle: MGSC 310 Problem Set Template
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+
+# Please leave this code chunk as is. It makes some slight formatting changes to alter the output to be more aesthetically pleasing. 
+
+library(knitr)
+
+# Change the number in set seed to your own favorite number
+set.seed(1818)
+options(width=70)
+options(scipen=99)
+
+
+# this sets text outputted in code chunks to small
+opts_chunk$set(tidy.opts=list(width.wrap=50),tidy=TRUE, size = "vsmall")  
+opts_chunk$set(message = FALSE,                                          
+               warning = FALSE,
+               # "caching" stores objects in code chunks and only rewrites if you change things
+               cache = FALSE,                               
+               # automatically downloads dependency files
+               autodep = TRUE,
+               # 
+               cache.comments = FALSE,
+               # 
+               collapse = TRUE,
+               # change fig.width and fig.height to change the code height and width by default
+               fig.width = 5.5,  
+               fig.height = 4.5,
+               fig.align='center')
+
+
+```
+
+```{r setup-2}
+
+sessionInfo()
+getwd()
+
+```
+
+
+
+```{r setup-3}
+
+
+
+library(partykit)
+library(tidyverse)
+library(PerformanceAnalytics)
+library(rpart)       
+library(rpart.plot)  
+library('readr')
+library(randomForest)
+library('pdp')
+library(ggplot2)
+
+```
+
+
+
+```{r}
+spfyt = read_csv('datasets/Spotify_Youtube.csv')
+
+
+ggplot(data = spfyt, aes(x = Views, y = Likes)) + 
+  geom_point() +
+  theme_dark()+
+  geom_smooth()+
+  theme_bw(base_size = 16) + 
+  labs(x = "Views", y = "Likes") 
+
+
+hist(spfyt$Stream, 
+     main = "Histogram of Stream",
+     xlab = "Values",
+     ylab = "Frequency",
+     col = "lightblue",
+     border = "black",
+     xlim = c(min(0), max(500000000))
+)
+
+ 
+
+
+```
+
+
+
+
+```{r}
+
+# Read the CSV file into a data frame named 'spfyt'
+
+spfyt = read_csv('datasets/Spotify_Youtube.csv')
+
+
+# Data cleaning: Convert 'Channel' to a factor with the top 50 most frequent levels
+# Calculate the frequency of each level in 'Channel'
+
+channel_freq <- table(spfyt$Channel)
+
+# Select the top 50 levels based on frequency
+
+top50_levels <- names(sort(channel_freq, decreasing = TRUE)[1:50])
+
+# Convert 'Channel' to a factor with the selected levels
+
+spfyt$Channel <- factor(spfyt$Channel, levels = top50_levels)
+
+# Convert 'Licensed' to a factor
+
+spfyt$Licensed <- as.factor(spfyt$Licensed)
+
+# Remove rows with missing values
+
+spfyt <- na.omit(spfyt)
+
+# Build a random forest classification model named 'randomforest111'
+
+randomforest111 <- randomForest(Likes ~ 
+                         Danceability + Duration_ms + 
+                         Channel + Licensed,
+                       data = spfyt,
+                       type = "classification",
+                       mtry = 3,
+                       na.action = na.roughfix,
+                       ntree = 150, 
+                       importance = TRUE) 
+
+
+
+# Plot the variable importance of the random forest model
+
+varImpPlot(randomforest111)
+
+
+# Create a partial dependence plot for 'Danceability' in the context of 'randomforest111'
+
+pdp::partial(randomforest111, 
+             pred.var = "Danceability", 
+             plot = TRUE,
+             rug = TRUE,
+             plot.engine = "ggplot2",
+             smooth = TRUE,
+             trim.outliers = FALSE,
+             prob = TRUE,
+             center = TRUE,
+             type = "regression", 
+             which.class = 2)
+
+
+
+
+
+
+```
+
+
+

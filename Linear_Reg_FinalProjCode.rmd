@@ -1,0 +1,689 @@
+---
+title: MGSC-310 Final Project Code
+author: Heer Patel
+subtitle: Linear Regression Model
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+
+library('knitr')
+
+set.seed (1818)
+options(width=70)
+options(scipen=99)
+
+knitr::opts_chunk$set(
+  fig.align = "center",
+  fig.height = 4.5,
+  fig.width = 5.5,
+  message = FALSE,
+  warning = FALSE,
+  autodep = TRUE,
+  cache = FALSE,
+  cache.comments = FALSE,
+  collapse = TRUE,
+  size = "vsmall",
+  tidy = TRUE,
+  tidy.opts = list(width.wrap = 50)
+)
+ 
+opts_chunk$set(message = FALSE,
+               warning = FALSE,
+               cache = FALSE,
+               autodep = TRUE,
+               cache.comments = FALSE,
+               collapse = TRUE,
+               fig.width = 5.5,
+               fig.height = 4.5,
+               fig.align = 'center')
+
+```
+
+```{r setup-2}
+
+sessionInfo()
+getwd() 
+
+```
+
+```{r setup-3}
+
+library('tidyverse')
+library('readr')
+library('dplyr')
+library('ggplot2')
+library('ggthemes')
+library("ggrepel")
+library('forcats')
+library("formatR")
+library('rsample')
+library("purrr")
+library('plotROC')
+library("glmnet")
+library("glmnetUtils")
+library("yardstick")
+library('corrplot')
+library('tidymodels')
+library(sjPlot)
+
+```
+
+## Data Handling/Cleaning
+
+Adding the dataset
+```{r}
+
+songs <- read.csv("datasets/Spotify_Youtube.csv")
+names(songs)
+print(sapply(songs, class))
+
+```
+
+Removing missing values
+```{r}
+
+songs <- songs %>% na.omit()
+
+missing_values <- songs %>%
+  summarise_all(~ sum(is.na(.)))
+
+print(missing_values[missing_values > 0])
+
+```
+
+remove outliers
+```{r}
+
+remove_outliers <- function(variable) {
+  q1 <- quantile(variable, 0.25)
+  q3 <- quantile(variable, 0.75)
+  iqr <- q3 - q1
+  lower_bound <- q1 - 1.5 * iqr
+  upper_bound <- q3 + 1.5 * iqr
+  return(variable >= lower_bound & variable <= upper_bound)
+}
+
+numeric_vars <- sapply(songs, is.numeric)
+
+your_data_frame_no_outliers <- songs
+for (var in names(songs)[numeric_vars]) {
+  your_data_frame_no_outliers <- your_data_frame_no_outliers[remove_outliers(your_data_frame_no_outliers[[var]]), ]
+}
+
+
+
+
+```
+
+
+
+
+Cleaning the dataset (variables)
+```{r}
+
+
+songs_clean <- songs %>% mutate(Album_type = as.factor(Album_type),
+                                Licensed = as.factor(Licensed),
+                                official_video = as.factor(official_video)) %>% select(-Url_spotify, -Uri, -Url_youtube, -Description, -X) %>% mutate(popular = if_else(Stream > 100000000, 1, 0), popular = as.factor(popular)) %>% mutate(Channel = as.factor(Channel),                                                     channel_factor = fct_lump_n(Channel, n=10)) %>% mutate(Artist = as.factor(Artist)) %>% mutate(log_likes = log(Likes)) %>% mutate(log_dance = log(Danceability))
+
+levels(songs_clean$channel_factor)
+
+songs_clean$Speechiness <- round(songs_clean$Speechiness, 3)
+songs_clean$Instrumentalness <- round(songs_clean$Instrumentalness, 3)
+songs_clean$Acousticness <- round(songs_clean$Acousticness, 3)
+songs_clean$Liveness <- round(songs_clean$Liveness, 3)
+songs_clean$Danceability <- round(songs_clean$Danceability, 3)
+songs_clean$Energy <- round(songs_clean$Energy, 3)
+songs_clean$Valence <- round(songs_clean$Valence, 3)
+
+
+glimpse(songs_clean)
+
+```
+
+More removing outliers 
+```{r}
+
+Q1 <- quantile(songs_clean$Likes, 0.25)
+Q3 <- quantile(songs_clean$Likes, 0.75)
+IQR <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+songs_clean <- songs_clean[songs_clean$Likes >= lower_bound & songs_clean$Likes <= upper_bound, ]
+
+
+
+songs_clean <- songs_clean[complete.cases(songs_clean$log_likes) & is.finite(songs_clean$log_likes), ]
+
+songs_clean <- songs_clean[complete.cases(songs_clean$log_dance) & is.finite(songs_clean$log_dance), ]
+
+```
+
+
+Splitting the dataset into testing and training datasets
+```{r}
+
+songs_split <- initial_split(songs_clean, prop = 0.75)
+songs_train <- training(songs_split)
+songs_test <- testing(songs_split)
+
+```
+
+
+## Final Regression Model 
+
+Version 5
+```{r}
+
+lin_mod5 <- lm(log_likes ~ Danceability + Licensed + official_video + Valence + channel_factor + Loudness + Liveness, data = songs_train)
+
+# Check the summary of the model
+summary(lin_mod5)
+
+#Plotting the coefficients with the standard error 
+tab_model(lin_mod5)
+
+plot_model(lin_mod5)
+
+tidy(lin_mod5)
+
+```
+
+## Generating Predictions for the model 
+
+Generating the predictions 
+```{r}
+
+log_preds_train <- predict(lin_mod5, newdata = songs_train)
+preds_train <- exp(log_preds_train)
+
+log_preds_test <- predict(lin_mod5, newdata = songs_test)
+preds_test <- exp(log_preds_test)
+
+```
+
+Calculating RMSE in the test and training sets
+```{r}
+
+get_rmse <- function(true, predictions){
+  sqrt(mean((true - predictions)^2))
+}
+get_rmse(songs_train$Likes, preds_train)
+get_rmse(songs_test$Likes, preds_test)
+
+```
+
+Generating prediction/true plots 
+```{r}
+
+results_train <- 
+  tibble(
+    `preds` = preds_train,
+    `true` = songs_train$Likes,
+    `type` = "train"
+  )
+
+results_test <- 
+  tibble(
+    `preds` = preds_test,
+    `true` = songs_test$Likes,
+    `type` = "test"
+  )
+
+results_df <- 
+  bind_rows(results_train, results_test)
+
+ggplot(results_df, aes(x = true, y = preds)) +
+  geom_point(aes(color = type), alpha = 1/10) + 
+  geom_abline(color = "purple") +
+  facet_wrap(~ type) +
+  xlim(0,1500000) + ylim(0,500000) +
+  theme_clean(base_size = 8) + 
+  theme(legend.position="bottom")
+
+```
+
+Calculating MAE 
+```{r}
+
+get_mae <- function(true, predictions){
+  mean(abs(true - predictions))
+}
+
+MAE_train <- get_mae(results_test$true, results_test$preds)
+MAE_test <- get_mae(results_train$true, results_train$preds)
+
+print(MAE_train)
+print(MAE_test)
+
+MAE_data <- data.frame(MAE_plot <- c("MAE train", "MAE test"),
+MAE_plot1 <- c(MAE_train,MAE_test ))
+
+plot1 <- ggplot(MAE_data, aes(x = MAE_plot, y = MAE_plot1, fill = MAE_plot)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = MAE_plot1), position = position_stack(vjust = 0.5), size = 3)  +
+  labs(title = "Mean Absolute Error", x = "MAE_plot", y = "MAE_plot1") +
+  theme_clean()
+
+print(plot1)
+
+
+
+
+```
+
+
+
+## Observations in the variables  
+
+Checking correlation
+```{r}
+
+numeric_data <- songs_clean[, sapply(songs_clean, is.numeric)]
+
+correlation_matrix <- cor(numeric_data)
+
+print(round(correlation_matrix, 2))
+
+threshold <- 0.3
+
+strong_correlation_indices <- which(abs(correlation_matrix) > threshold & correlation_matrix != 1, arr.ind = TRUE)
+
+for (i in 1:nrow(strong_correlation_indices)) {
+  row_index <- strong_correlation_indices[i, 1]
+  col_index <- strong_correlation_indices[i, 2]
+  correlation <- correlation_matrix[row_index, col_index]
+  print(paste("Variables:", colnames(correlation_matrix)[row_index], "and", colnames(correlation_matrix)[col_index], "Correlation:", round(correlation, 2)))
+}
+
+numeric_columns <- names(songs_clean)[sapply(songs_clean, is.numeric)]
+
+# Calculate correlations
+correlation_matrix <- cor(songs_clean[numeric_columns])
+
+# Create a correlation heatmap
+corr_heatmap <- corrplot(correlation_matrix, method = "color", addCoef.col = "black", order = "hclust", tl.col = "black", tl.srt = 45, tl.cex = 0.7, number.cex = 0.5)
+
+```
+
+checking histograms
+```{r}
+
+hist(songs_clean$Likes)
+hist(songs_clean$Danceability)
+hist(songs_clean$Valence)
+hist(songs_clean$Loudness)
+hist(songs_clean$Liveness)
+
+```
+
+Summary stats on our dependent variable Likes
+```{r}
+
+summary(songs_clean$Likes)
+
+likes_summary <- summary(songs_clean$Likes)
+
+# Bar plot for mean and median
+likes_summary <- summary(songs_clean$Likes)
+
+# Bar plot for mean and median
+barplot(c(likes_summary["Mean"], likes_summary["Median"]),
+        col = c("lightblue", "lightgreen"),
+        main = "Mean and Median of Likes",
+        ylab = "Count",
+        names.arg = c("Mean", "Median"),
+        ylim = c(0, max(likes_summary["Mean"], likes_summary["Median"]) + 500000))
+
+```
+
+Observations for the variable Artist
+- find the top 15 artists based on number of likes received 
+```{r}
+# Most Viewed artist on Youtube
+artists_yt <- songs_clean %>%
+  group_by(Artist) %>%
+  summarize(TotalViews = sum(Views)) %>%
+  arrange(desc(TotalViews)) %>%
+  head(15)
+
+
+ggplot(artists_yt, aes(x = TotalViews, y = reorder(Artist, -TotalViews))) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Top 15 most viewed artists on Youtube",
+       xlabel = "Number of views", y = "Artists") +
+  theme_clean()
+
+
+
+artists_yt <- songs_clean %>%
+  group_by(Artist) %>%
+  summarize(TotalStreams = sum(Stream)) %>%
+  arrange(desc(TotalStreams)) %>%
+  head(15)
+
+# Create a horizontal bar plot
+ggplot(artists_yt, aes(x = TotalStreams, y = reorder(Artist, -TotalStreams))) +
+  geom_bar(stat = "identity", fill = "green") +
+  labs(title = "Top 15 most streamed artists on Spotify",
+       xlabel = "Number of streams", y = "Artists") +
+  theme_clean()
+
+
+
+
+
+
+```
+
+Observations for variable Track
+```{r}
+
+toppsongs_likes <- songs_clean %>%
+  arrange(desc(Likes)) %>%
+  slice_max(Likes, n = 8) %>%
+  select(Artist, Track, Likes, Danceability, Speechiness, Acousticness, Instrumentalness, Liveness,Valence, Tempo, Energy )
+
+# Create a bar plot
+ggplot(toppsongs_likes, aes(x = Track, y = Likes, fill = Artist)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = 'Top 5 Liked Songs',
+       x = 'Track',
+       y = 'Number of Likes') +
+  scale_fill_manual(values = rep("#A52A2A", nrow(toppsongs_likes))) +
+  theme_clean() + 
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+
+unique_artists <- unique(toppsongs_likes$Artist)
+artist_colors <- rainbow(length(unique_artists))
+
+# Create a named vector with artist-color mapping
+color_mapping <- setNames(artist_colors, unique_artists)
+
+# Create a bar plot
+ggplot(toppsongs_likes, aes(x = Track, y = Likes, fill = Artist)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = 'Top 5 Liked Songs',
+       x = 'Track',
+       y = 'Number of Likes') +
+  scale_fill_manual(values = color_mapping) +
+  theme_clean() + 
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+
+
+```
+
+Relationship between top songs and other variables 
+```{r}
+
+p1 <- ggplot(toppsongs_likes, aes(x = Track, y = Danceability, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Danceability of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) + guides(fill = FALSE)
+
+p2 <- ggplot(toppsongs_likes, aes(x = Track, y = Energy, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Energy of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))+ guides(fill = FALSE)
+
+p3 <- ggplot(toppsongs_likes, aes(x = Track, y = Speechiness, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Speechiness of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) + guides(fill = FALSE)
+
+p4 <- ggplot(toppsongs_likes, aes(x = Track, y =Valence, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Valence of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) + guides(fill = FALSE)
+
+p5 <- ggplot(toppsongs_likes, aes(x = Track, y = Acousticness, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Acousticness of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) + guides(fill = FALSE)
+
+p6 <- ggplot(toppsongs_likes, aes(x = Track, y = Liveness, fill = Track)) +
+  geom_bar(stat = "identity") +
+  labs(title = 'Liveness of YouTube top tracks', x = '') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) + guides(fill = FALSE)
+
+
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+print(p5)
+print(p6)
+
+```
+
+Observations for the variable valence 
+```{r}
+
+ggplot(songs_clean, aes(x = Valence, y = Likes)) +
+  geom_point(alpha = 1/10) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Scatter Plot of Likes vs Valence",
+       x = "Valence",
+       y = "Likes") + ylim(0,10000000) +
+  theme_clean()
+
+```
+
+Finding the top channels on Youtube 
+```{r}
+
+library(ggplot2)
+
+# Filter data to exclude the specific level
+filtered_data <- subset(songs_clean, channel_factor != 'channel_to_exclude')
+
+# Create a bar plot
+ggplot(filtered_data, aes(x = channel_factor)) +
+  geom_bar(fill = "#A52A2A") +
+  labs(title = 'Count of Tracks for Each Channel Factor ',
+       x = 'Channel Factor',
+       y = 'Count') + ylim(0,250) + theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+  theme_minimal()
+
+```
+
+
+
+## Testing Different Linear Regression Models 
+
+Version 1 
+- low Adjusted R-squared:  0.04122 
+- Variables that stood out in accordance to p-value: Danceability, LicensedTrue, Instrumentalness, channel_factorSMTOWN, channel_factorSonyMusicSouthVEVO
+- model needs to be modified 
+```{r}
+
+lin_mod1 <- lm(Likes ~ Danceability + Duration_ms + channel_factor + Licensed + Album_type + Instrumentalness, 
+           data = songs_train)
+summary(lin_mod1)
+
+plot_model(lin_mod1)
+
+#Generating predictions for our model
+preds_train <- predict(lin_mod1)
+
+preds_train <- predict(lin_mod1, newdata = songs_train)
+preds_test <- predict(lin_mod1, newdata = songs_test)
+
+#Calculating RMSE in the test and training sets
+
+get_rmse <- function(true, predictions){
+  sqrt(mean((true - predictions)^2))
+}
+get_rmse(songs_train$Likes, preds_train)
+get_rmse(songs_test$Likes, preds_test)
+
+
+```
+
+Version 2 
+- removing channel factor as a variable did not bring much change instead lowered the Adjusted R squared value 
+```{r}
+
+lin_mod2 <- lm(Likes ~ Danceability + Duration_ms + Licensed + Album_type + Instrumentalness, 
+           data = songs_train)
+
+summary(lin_mod2)
+
+plot_model(lin_mod2)
+
+#Generating predictions for our model
+preds_train <- predict(lin_mod2)
+
+preds_train <- predict(lin_mod2, newdata = songs_train)
+preds_test <- predict(lin_mod2, newdata = songs_test)
+
+#Calculating RMSE in the test and training sets
+
+get_rmse <- function(true, predictions){
+  sqrt(mean((true - predictions)^2))
+}
+get_rmse(songs_train$Likes, preds_train)
+get_rmse(songs_test$Likes, preds_test)
+
+
+
+```
+
+Version 3 
+Semifinal Model 
+```{r}
+
+lin_mod3 <- lm(Likes ~ Danceability  + Licensed  + official_video  + Valence + channel_factor + Loudness + Liveness, data = songs_train)
+
+summary(lin_mod3)
+
+#Plotting the coefficients with the standard error 
+tab_model(lin_mod3)
+
+plot_model(lin_mod3)
+
+tidy(lin_mod3)
+
+
+
+```
+
+
+Version 4 
+```{r}
+
+lin_mod4 <- lm(Likes ~ Danceability  + Licensed  + official_video  + Valence  + Loudness + Liveness, data = songs_train)
+
+summary(lin_mod4)
+
+plot_model(lin_mod4)
+
+#Generating predictions for our model
+preds_train <- predict(lin_mod4)
+
+preds_train <- predict(lin_mod4, newdata = songs_train)
+preds_test <- predict(lin_mod4, newdata = songs_test)
+
+#Calculating RMSE in the test and training sets
+
+get_rmse <- function(true, predictions){
+  sqrt(mean((true - predictions)^2))
+}
+get_rmse(songs_train$Likes, preds_train)
+get_rmse(songs_test$Likes, preds_test)
+
+#Generating predictions for our model
+preds_train <- predict(lin_mod3)
+
+preds_train <- predict(lin_mod3, newdata = songs_train)
+preds_test <- predict(lin_mod3, newdata = songs_test)
+
+#Calculating RMSE in the test and training sets
+
+get_rmse <- function(true, predictions){
+  sqrt(mean((true - predictions)^2))
+}
+get_rmse(songs_train$Likes, preds_train)
+get_rmse(songs_test$Likes, preds_test)
+
+# Generating prediction/true plots 
+results_train <- 
+  tibble(
+    `preds` = preds_train,
+    `true` = songs_train$Likes,
+    `type` = "train"
+  )
+
+results_test <- 
+  tibble(
+    `preds` = preds_test,
+    `true` = songs_test$Likes,
+    `type` = "test"
+  )
+
+results_df <- 
+  bind_rows(results_train, results_test)
+
+ggplot(results_df, aes(x = true, y = preds)) +
+  geom_point(aes(color = type), alpha = 1/10) + 
+  geom_abline(color = "purple") +
+  facet_wrap(~ type) +
+  xlim(0,2500000) + ylim(0,2500000) +
+  theme_clean(base_size = 8) + 
+  theme(legend.position="bottom")
+
+# Calculate MAE in the test and training sets
+
+get_medae <- function(true, predictions){
+  median(abs(true - predictions))
+}
+
+get_medae(results_test$true, results_test$preds)
+get_medae(results_train$true, results_train$preds)
+
+get_mae <- function(true, predictions){
+  mean(abs(true - predictions))
+}
+
+get_mae(results_test$true, results_test$preds)
+get_mae(results_train$true, results_train$preds)
+
+
+
+
+```
+
+## Miscellaneous
+
+### Lasso Regression 
+used to predict which variables to use 
+```{r}
+
+songs_lasso <- songs_clean %>% select(-Artist, - Channel,-Track, -Album, -Title, -Stream, -Comments, -Views)
+
+lasso_fit1 <- cv.glmnet(Likes ~ .,
+                        data = songs_lasso,
+                       alpha = 1)
+
+print(coef(lasso_fit1, s = "lambda.min"))
+
+```
+
+
+
+
+
+
+
